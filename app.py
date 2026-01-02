@@ -2,7 +2,7 @@ import sqlite3
 from flask import Flask, render_template, request, jsonify
 import subprocess
 import re
-from datetime import datetime, timezone  # ✅ 新增 timezone
+from datetime import datetime, timezone  # ✅ 正确导入
 
 app = Flask(__name__)
 DB_FILE = 'domains.db'
@@ -46,7 +46,7 @@ def delete_stored_domain(domain_id):
         conn.commit()
 
 
-# --- 核心：使用系统 whois 命令查询 ---
+# --- 解析 WHOIS 输出中的过期时间 ---
 def parse_expiry_from_whois_output(output):
     lines = output.split('\n')
     expiry_keywords = [
@@ -54,10 +54,10 @@ def parse_expiry_from_whois_output(output):
         '过期时间', '过期日期', 'expiry date', 'renewal date'
     ]
     date_patterns = [
-        r'\d{4}-\d{2}-\d{2}',
-        r'\d{2}-\d{2}-\d{4}',
-        r'\d{2}/\d{2}/\d{4}',
-        r'\d{4}\.\d{2}\.\d{2}',
+        r'\d{4}-\d{2}-\d{2}',          # 2025-08-14
+        r'\d{2}-\d{2}-\d{4}',          # 14-08-2025
+        r'\d{2}/\d{2}/\d{4}',          # 08/14/2025
+        r'\d{4}\.\d{2}\.\d{2}',        # 2025.08.14
     ]
     
     for line in lines:
@@ -80,6 +80,7 @@ def parse_expiry_from_whois_output(output):
     return None
 
 
+# --- 查询域名信息 ---
 def get_domain_info(domain_id, domain_name):
     try:
         result = subprocess.run(
@@ -109,20 +110,16 @@ def get_domain_info(domain_id, domain_name):
 
         try:
             exp_date = datetime.strptime(expiry_date_str, '%Y-%m-%d')
-            # 将解析出的 naive 日期视为 UTC（WHOIS 通常返回 UTC 或本地时间，此处简化处理）
-            # 为了和 now 统一，我们只比较日期部分（不涉及时区转换）
         except ValueError:
             return {
                 "id": domain_id,
                 "domain": domain_name,
-                "error": f"无法解析日期: {expiry_date_str}",
+                "error": f"无法解析日期格式: {expiry_date_str}",
                 "status": "error"
             }
 
-        # ✅ 使用 timezone-aware UTC 时间
-        now = datetime.now(timezone.UTC)  # 替代 datetime.utcnow()
-        # 注意：exp_date 是 naive datetime，我们只取日期部分比较（忽略时区）
-        # 计算天数差时，只比较 date() 部分更安全
+        # ✅ 使用 timezone.utc（小写）—— 兼容所有 Python 3.6+
+        now = datetime.now(timezone.utc)
         days_left = (exp_date.date() - now.date()).days
 
         if days_left < 0:
@@ -155,7 +152,7 @@ def get_domain_info(domain_id, domain_name):
         return {
             "id": domain_id,
             "domain": domain_name,
-            "error": "系统未安装 'whois' 命令，请运行: sudo apt install whois",
+            "error": "系统缺少 'whois' 命令，请运行: sudo apt install whois",
             "status": "error"
         }
     except Exception as e:
@@ -209,6 +206,6 @@ def delete_domain(domain_id):
 
 if __name__ == '__main__':
     init_db()
-    print("服务启动中（使用系统 WHOIS 命令查询）...")
-    print("请确保已安装 'whois' 工具（如未安装，请运行: sudo apt install whois）")
+    print("✅ 域名到期监控服务启动（使用系统 WHOIS）")
+    print("💡 请确保已安装 'whois'：sudo apt install whois")
     app.run(debug=True, port=5000, host='0.0.0.0')
