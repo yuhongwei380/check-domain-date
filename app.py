@@ -1,17 +1,16 @@
 import sqlite3
 from flask import Flask, render_template, request, jsonify
-import whois
+import requests
 from datetime import datetime
+import dateutil.parser # 这是一个强大的时间解析库，通常随 requests 或其他库安装，如果没有请 pip install python-dateutil
 
 app = Flask(__name__)
 DB_FILE = 'domains.db'
 
-# --- 数据库处理函数 ---
+# --- 数据库处理 (保持不变) ---
 def init_db():
-    """初始化数据库，创建表"""
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
-        # 创建一个简单的表，只存 ID 和 域名
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS domains (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,14 +20,12 @@ def init_db():
         conn.commit()
 
 def get_stored_domains():
-    """获取所有已保存的域名"""
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id, name FROM domains")
-        return cursor.fetchall() # 返回 [(1, 'google.com'), ...]
+        return cursor.fetchall()
 
 def add_stored_domain(domain_name):
-    """添加域名"""
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
@@ -36,30 +33,66 @@ def add_stored_domain(domain_name):
             conn.commit()
             return True
     except sqlite3.IntegrityError:
-        return False # 域名已存在
+        return False
 
 def delete_stored_domain(domain_id):
-    """删除域名"""
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM domains WHERE id = ?", (domain_id,))
         conn.commit()
 
-# --- WHOIS 查询逻辑 ---
+# --- 新的核心逻辑：使用 RDAP (HTTP) 替代 Whois (Port 43) ---
 def get_domain_info(domain_id, domain_name):
+    rdap_url = f"https://rdap.org/domain/{domain_name}"
+    
     try:
-        w = whois.whois(domain_name)
+        # 使用 HTTP 请求，防火墙通常不会拦截 HTTPS
+        response = requests.get(rdap_url, timeout=10)
         
-        exp_date = w.expiration_date
-        if isinstance(exp_date, list):
-            exp_date = exp_date[0]
-            
-        if not exp_date:
-            return {"id": domain_id, "domain": domain_name, "error": "未找到过期时间"}
+        if response.status_code == 404:
+            return {"id": domain_id, "domain": domain_name, "error": "域名未注册或找不到"}
+        
+        if response.status_code != 200:
+            return {"id": domain_id, "domain": domain_name, "error": f"查询失败 (HTTP {response.status_code})"}
 
-        now = datetime.now()
-        days_left = (exp_date - now).days
+        data = response.json()
         
+        # 1. 解析过期时间
+        expiration_date_str = None
+        # RDAP 返回的是一个 events 列表，我们需要找到 'expiration' 事件
+        events = data.get('events', [])
+        for event in events:
+            if event.get('eventAction') in ['expiration', 'registration expiration']:
+                expiration_date_str = event.get('eventDate')
+                break
+        
+        if not expiration_date_str:
+            return {"id": domain_id, "domain": domain_name, "error": "未找到过期时间字段"}
+
+        # 2. 解析时间字符串 (ISO 8601 格式)
+        # 格式通常是 "2025-08-14T04:00:00Z"
+        exp_date = dateutil.parser.parse(expiration_date_str)
+        # 转为不带时区的本地时间用于计算天数 (简单处理)
+        exp_date_naive = exp_date.replace(tzinfo=None)
+        now = datetime.utcnow()
+        
+        days_left = (exp_date_naive - now).days
+        
+        # 3. 获取注册商名字
+        registrar_name = "未知"
+        entities = data.get('entities', [])
+        for entity in entities:
+            if 'registrar' in entity.get('roles', []):
+                vcard = entity.get('vcardArray', [])
+                if len(vcard) > 1:
+                    # vCard 格式比较复杂，通常找 fn (Full Name)
+                    for item in vcard[1]:
+                        if item[0] == 'fn':
+                            registrar_name = item[3]
+                            break
+                break
+
+        # 4. 判定状态颜色
         if days_left < 30:
             status = "critical"
         elif days_left < 90:
@@ -72,14 +105,18 @@ def get_domain_info(domain_id, domain_name):
             "domain": domain_name,
             "expiration_date": exp_date.strftime('%Y-%m-%d'),
             "days_left": days_left,
-            "registrar": w.registrar,
+            "registrar": registrar_name,
             "status": status,
             "error": None
         }
-    except Exception as e:
-        return {"id": domain_id, "domain": domain_name, "error": str(e)}
 
-# --- 路由 ---
+    except requests.exceptions.Timeout:
+        return {"id": domain_id, "domain": domain_name, "error": "连接超时 (请检查网络)"}
+    except Exception as e:
+        print(f"Error parsing {domain_name}: {str(e)}")
+        return {"id": domain_id, "domain": domain_name, "error": "解析数据出错"}
+
+# --- 路由 (保持不变) ---
 
 @app.route('/')
 def home():
@@ -87,28 +124,21 @@ def home():
 
 @app.route('/api/domains', methods=['GET'])
 def get_domains():
-    """获取所有域名的状态"""
     stored_domains = get_stored_domains()
     results = []
-    
-    # 对数据库中的每个域名进行 Whois 查询
-    # 注意：如果域名很多，这里会比较慢，生产环境建议使用后台任务或缓存
     for d_id, d_name in stored_domains:
         info = get_domain_info(d_id, d_name)
         results.append(info)
-        
     return jsonify(results)
 
 @app.route('/api/domains', methods=['POST'])
 def add_domain():
-    """添加新域名"""
     data = request.json
     domain = data.get('domain')
     if not domain:
         return jsonify({"success": False, "message": "域名不能为空"}), 400
     
-    # 简单的域名清洗
-    domain = domain.lower().replace('http://', '').replace('https://', '').split('/')[0]
+    domain = domain.lower().strip().replace('http://', '').replace('https://', '').split('/')[0]
 
     if add_stored_domain(domain):
         return jsonify({"success": True, "message": "添加成功"})
@@ -117,11 +147,11 @@ def add_domain():
 
 @app.route('/api/domains/<int:domain_id>', methods=['DELETE'])
 def delete_domain(domain_id):
-    """删除域名"""
     delete_stored_domain(domain_id)
     return jsonify({"success": True})
 
 if __name__ == '__main__':
-    init_db() # 启动前初始化数据库
-    print("数据库已初始化，服务启动中...")
+    init_db()
+    print("服务启动中 (RDAP模式)...")
+    # 保持 0.0.0.0 以允许局域网访问
     app.run(debug=True, port=5000, host='0.0.0.0')
