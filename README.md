@@ -1,1 +1,2 @@
-pip install flask python-whois
+
+pip install flask python-whois --break-system-packages
