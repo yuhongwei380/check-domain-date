@@ -124,4 +124,4 @@ def delete_domain(domain_id):
 if __name__ == '__main__':
     init_db() # 启动前初始化数据库
     print("数据库已初始化，服务启动中...")
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=5000, host='0.0.0.0')
