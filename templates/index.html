@@ -1,106 +1,234 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Domain Expiration Monitor</title>
-    <!-- Bootstrap CSS for styling -->
+    <title>域名过期监控</title>
+    <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- FontAwesome 图标 -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        body { background-color: #f8f9fa; padding-top: 50px; }
-        .card { box-shadow: 0 4px 8px rgba(0,0,0,0.1); border: none; }
-        .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
-        .bg-good { background-color: #198754; }    /* Green */
-        .bg-warning { background-color: #ffc107; } /* Yellow */
-        .bg-critical { background-color: #dc3545; } /* Red */
-        .loading { text-align: center; padding: 20px; font-style: italic; color: #666; }
+        body {
+            /* 蓝色渐变背景 */
+            background: linear-gradient(135deg, #0d47a1 0%, #42a5f5 100%);
+            min-height: 100vh;
+            padding-top: 40px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .main-card {
+            background-color: #ffffff;
+            border-radius: 15px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            border: none;
+            overflow: hidden;
+        }
+        .card-header {
+            background-color: #1565c0; /* 深蓝 */
+            color: white;
+            padding: 20px;
+            border-bottom: none;
+        }
+        .btn-add {
+            background-color: #1e88e5;
+            color: white;
+        }
+        .btn-add:hover {
+            background-color: #1565c0;
+            color: white;
+        }
+        .table thead {
+            background-color: #e3f2fd; /* 浅蓝表头 */
+            color: #0d47a1;
+        }
+        .status-badge {
+            font-size: 0.9em;
+            padding: 6px 12px;
+            border-radius: 20px;
+        }
+        /* 状态颜色 */
+        .bg-good { background-color: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+        .bg-warning { background-color: #fff3e0; color: #ef6c00; border: 1px solid #ffe0b2; }
+        .bg-critical { background-color: #ffebee; color: #c62828; border: 1px solid #ffcdd2; }
+        
+        .loading-spinner { display: none; }
     </style>
 </head>
 <body>
 
 <div class="container">
     <div class="row justify-content-center">
-        <div class="col-md-10">
-            <div class="card p-4">
-                <h2 class="mb-4 text-center">📅 Domain Status Monitor</h2>
-                
-                <div class="table-responsive">
-                    <table class="table table-hover align-middle">
-                        <thead class="table-dark">
-                            <tr>
-                                <th>Domain</th>
-                                <th>Registrar</th>
-                                <th>Expiration Date</th>
-                                <th>Days Left</th>
-                                <th>Status</th>
-                            </tr>
-                        </thead>
-                        <tbody id="domain-table-body">
-                            <!-- Data will be inserted here by JS -->
-                        </tbody>
-                    </table>
-                </div>
-                
-                <div id="loading" class="loading">
-                    <div class="spinner-border text-primary" role="status">
-                        <span class="visually-hidden">Loading...</span>
-                    </div>
-                    <p class="mt-2">Fetching WHOIS data (this may take a moment)...</p>
+        <div class="col-lg-10">
+            
+            <!-- 主卡片 -->
+            <div class="card main-card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h3 class="mb-0"><i class="fas fa-globe me-2"></i> 域名状态监控</h3>
+                    <span id="domain-count" class="badge bg-light text-primary">0 个域名</span>
                 </div>
 
+                <div class="card-body p-4">
+                    
+                    <!-- 添加域名区域 -->
+                    <div class="input-group mb-4">
+                        <input type="text" id="new-domain" class="form-control form-control-lg" placeholder="输入域名 (例如: google.com)">
+                        <button class="btn btn-add btn-lg" type="button" onclick="addDomain()">
+                            <i class="fas fa-plus"></i> 添加监控
+                        </button>
+                    </div>
+
+                    <!-- 表格区域 -->
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle">
+                            <thead>
+                                <tr>
+                                    <th>域名</th>
+                                    <th>注册商</th>
+                                    <th>过期时间</th>
+                                    <th>剩余天数</th>
+                                    <th>状态</th>
+                                    <th class="text-end">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="domain-table-body">
+                                <!-- JS 将在这里插入数据 -->
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Loading 提示 -->
+                    <div id="loading" class="text-center py-4">
+                        <div class="spinner-border text-primary" role="status"></div>
+                        <p class="mt-2 text-muted">正在同步 Whois 信息...</p>
+                    </div>
+
+                </div>
             </div>
+
+            <div class="text-center mt-3 text-white-50">
+                <small>数据来源于 Whois 服务器，查询可能需要几秒钟。</small>
+            </div>
+
         </div>
     </div>
 </div>
 
 <script>
-    document.addEventListener("DOMContentLoaded", function() {
-        fetch('/api/status')
+    // 页面加载完成后自动获取数据
+    document.addEventListener("DOMContentLoaded", loadDomains);
+
+    function loadDomains() {
+        const tableBody = document.getElementById('domain-table-body');
+        const loadingDiv = document.getElementById('loading');
+        
+        tableBody.innerHTML = ''; // 清空表格
+        loadingDiv.style.display = 'block';
+
+        fetch('/api/domains')
             .then(response => response.json())
             .then(data => {
-                const tableBody = document.getElementById('domain-table-body');
-                const loadingDiv = document.getElementById('loading');
-                
-                // Hide loading spinner
                 loadingDiv.style.display = 'none';
+                document.getElementById('domain-count').innerText = data.length + " 个域名";
+
+                if (data.length === 0) {
+                    tableBody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">暂无域名，请在上方添加。</td></tr>';
+                    return;
+                }
 
                 data.forEach(item => {
                     const row = document.createElement('tr');
 
+                    let statusHtml = '';
                     if (item.error) {
+                        statusHtml = `<span class="badge bg-secondary">查询失败</span>`;
                         row.innerHTML = `
                             <td class="fw-bold text-danger">${item.domain}</td>
-                            <td colspan="4" class="text-danger">Error: ${item.error}</td>
+                            <td colspan="3" class="text-danger"><small>${item.error}</small></td>
+                            <td>${statusHtml}</td>
+                            <td class="text-end">
+                                <button class="btn btn-sm btn-outline-danger" onclick="deleteDomain(${item.id})"><i class="fas fa-trash"></i></button>
+                            </td>
                         `;
                     } else {
-                        // Badge logic
-                        let badgeClass = 'bg-success';
-                        let badgeText = 'Healthy';
+                        let badgeClass = 'bg-good';
+                        let badgeText = '健康';
+                        let daysClass = 'fw-bold text-success';
                         
                         if (item.status === 'warning') {
-                            badgeClass = 'bg-warning text-dark';
-                            badgeText = 'Expiring Soon';
+                            badgeClass = 'bg-warning';
+                            badgeText = '即将过期';
+                            daysClass = 'fw-bold text-warning';
                         } else if (item.status === 'critical') {
-                            badgeClass = 'bg-danger';
-                            badgeText = 'Critical';
+                            badgeClass = 'bg-critical';
+                            badgeText = '急需续费';
+                            daysClass = 'fw-bold text-danger';
                         }
 
                         row.innerHTML = `
                             <td class="fw-bold">${item.domain}</td>
-                            <td class="text-muted">${item.registrar || 'Unknown'}</td>
+                            <td class="text-muted small">${item.registrar ? item.registrar.substring(0, 20) : '未知'}</td>
                             <td>${item.expiration_date}</td>
-                            <td class="fw-bold">${item.days_left} days</td>
-                            <td><span class="badge ${badgeClass}">${badgeText}</span></td>
+                            <td class="${daysClass}">${item.days_left} 天</td>
+                            <td><span class="status-badge ${badgeClass}">${badgeText}</span></td>
+                            <td class="text-end">
+                                <button class="btn btn-sm btn-outline-danger" onclick="deleteDomain(${item.id})"><i class="fas fa-trash"></i></button>
+                            </td>
                         `;
                     }
                     tableBody.appendChild(row);
                 });
             })
             .catch(error => {
-                console.error('Error fetching data:', error);
-                document.getElementById('loading').innerHTML = "<p class='text-danger'>Failed to load data.</p>";
+                console.error('Error:', error);
+                loadingDiv.innerHTML = '<p class="text-danger">加载失败，请检查后端服务。</p>';
             });
-    });
+    }
+
+    function addDomain() {
+        const input = document.getElementById('new-domain');
+        const domain = input.value.trim();
+
+        if (!domain) return alert("请输入域名");
+
+        // 简单的 UI 反馈
+        const btn = document.querySelector('.btn-add');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 添加中...';
+        btn.disabled = true;
+
+        fetch('/api/domains', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ domain: domain })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                input.value = '';
+                loadDomains(); // 重新加载列表
+            } else {
+                alert(data.message);
+            }
+        })
+        .finally(() => {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        });
+    }
+
+    function deleteDomain(id) {
+        if (!confirm("确定要删除这个域名吗？")) return;
+
+        fetch(`/api/domains/${id}`, {
+            method: 'DELETE'
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                loadDomains();
+            }
+        });
+    }
 </script>
 
 </body>
